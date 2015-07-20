@@ -2,6 +2,7 @@
 
 import sys, time
 import os, fnmatch, urllib, urllib2, base64, gzip
+import getpass
 
 nunda_server="http://nunda.northwestern.edu/nunda/"
 
@@ -192,7 +193,7 @@ HELP_MESSAGE="""
 xnat.py user:password project_name <options>
 	-h or --help	print this message
 
-	user:password	login credentials for NUNDA (sorry to require plaintext)
+	user	        login for NUNDA password will be typed
 	project_name	name of the project holding subject sessions on NUNDA
 
 	<options>
@@ -210,92 +211,88 @@ xnat.py user:password project_name <options>
 	The _DIR_PATTERN is the regular expresssion used to figure out which set of files to get
 """ % (RECON_LABEL,FUNCTIONAL_RUN_FILES, ANATOMICAL_RUN_FILES, FUNCTIONAL_DIR_PATTERN, ANATOMICAL_DIR_PATTERN)
 
-def main(a=[]):
-    if a==[]:
-        args=sys.argv
-    else:
-        args=a.split()
-        print "args", args
-    
-    if len(args)==1 or args[1]=='-h' or args[1]=='--help':
-  	print HELP_MESSAGE
-  	return
-    
-    # user:password should be in argv[1]
-    t=args[1].split(':')
-    user=t[0]
-    password=t[1]
-    
-    # project name should be in argv[2]
-    project_name=args[2]
-    
-    # Create network connection
-    print "Connecting to NUNDA"
-    try:
-  	N=Nunda_Session(user,password)
-    except:
-  	print "Unable to connect to NUNDA"
-  	return
-    
-    try:
-   	q=N.query_nunda("data/archive/projects/%s/subjects?columns=xnat:subjectData/ID,xnat:subjectData/LABEL&format=csv" % project_name)
-    except:
-   	print "Unable to retrieve subjects in project %s" % project_name
-   	return
-    
-    # Collects subject and session data from NUNDA
-    start_time=time.time()
-    subject_table=N.parse_table(q)
-    subject_list=[]
-    for i in subject_table[1:]:
-  	S=Subject(i[1],N)
-  	S.add_nunda_id(i[0])
-  	q=N.query_nunda("data/archive/projects/%s/subjects/%s/experiments?columns=ID,project&format=csv" % (project_name,S.nunda_id))
-  	exp_table=N.parse_table(q)
-  	S.add_exp_id(exp_table[1][0])
-  	q=N.query_nunda("data/archive/experiments/%s/reconstructions?columns=ID,project&format=csv" % S.experiment_id)
-  	recon_table=N.parse_table(q)
-  	for r in recon_table[1:]:
-  	    S.add_reconstruction(r[1],r[2])
-  	subject_list.append(S)
-    
-    # -l or --list option
-    if len(args)>3 and (args[3]=='-l' or args[3]=='--list'):
-  	# report what is available
-  	for s in subject_list:
- 		print "%s, %s reconstructions" % (s.label,len(s.reconstructions))
- 		for i in s.reconstructions:
-    			print "    %s" % i[0]
-  	return
-    
-    if len(args)==3 or args[3]=='all' or args[3]=='-a' or args[3]=='--all': # defaults to all
-   	download_list=subject_list
-    else:
-  	download_list=[]
-  	for i in args[3:]:
-  	    for j in subject_list: # find match
-    		if j.label==i:
-   	   	    print "Adding %s to download list" % i
-   	            download_list.append(j)
-   	            
-    # Get the data
-    for s in download_list:
-    	print "Getting ",s.label
-	s.recon_files(RECON_LABEL)
-    
-    elapsed_time=time.time()-start_time
-    print "Done, %d seconds elapsed" % elapsed_time
-    return
+def main():
+	args=sys.argv
+	if len(args)==1 or args[1]=='-h' or args[1]=='--help':
+		print HELP_MESSAGE
+		return
+
+	# Argv[1] can hold user:password
+	# or just user, which is preferred for security
+	t=args[1].split(':')
+	user=t[0]
+	if len(t)<2 or t[1]=='':
+		print "NUNDA login user %s" % t[0] 
+		password=getpass.getpass()
+	else:
+		password=t[1]
+
+	# project name should be in argv[2]
+	project_name=args[2]
+
+	# Create network connection
+	print "Connecting to NUNDA"
+	try:
+		N=Nunda_Session(user,password)
+	except:
+		print "Unable to connect to NUNDA"
+		return
+
+	try:
+		q=N.query_nunda("data/archive/projects/%s/subjects?columns=xnat:subjectData/ID,xnat:subjectData/LABEL&format=csv" % project_name)
+	except:
+		print "Unable to retrieve subjects in project %s" % project_name
+		return
+
+	# Collects subject and session data from NUNDA
+	start_time=time.time()
+	subject_table=N.parse_table(q)
+	subject_list=[]
+	for i in subject_table[1:]:
+		S=Subject(i[1],N)
+		S.add_nunda_id(i[0])
+		q=N.query_nunda("data/archive/projects/%s/subjects/%s/experiments?columns=ID,project&format=csv" % (project_name,S.nunda_id))
+		exp_table=N.parse_table(q)
+		S.add_exp_id(exp_table[1][0])
+		q=N.query_nunda("data/archive/experiments/%s/reconstructions?columns=ID,project&format=csv" % S.experiment_id)
+		recon_table=N.parse_table(q)
+		for r in recon_table[1:]:
+		    S.add_reconstruction(r[1],r[2])
+		subject_list.append(S)
+
+	# -l or --list option
+	if len(args)>3 and (args[3]=='-l' or args[3]=='--list'):
+		# report what is available
+		for s in subject_list:
+			print "%s, %s reconstructions" % (s.label,len(s.reconstructions))
+			for i in s.reconstructions:
+				print "    %s" % i[0]
+		return
+
+	if len(args)==3 or args[3]=='all' or args[3]=='-a' or args[3]=='--all': # defaults to all
+		download_list=subject_list
+	else:
+		download_list=[]
+		for i in args[3:]:
+			for j in subject_list: # find match
+				if j.label==i:
+					print "Adding %s to download list" % i
+					download_list.append(j)
+
+	# Get the data
+	for s in download_list:
+		print "Getting ",s.label
+		s.recon_files(RECON_LABEL)
+
+	elapsed_time=time.time()-start_time
+	print "Done, %d seconds elapsed" % elapsed_time
+	return
 
 
 #########################
 
-# If running from command line:
-# main()
+main()
 
-# Running from IDE
-print "Starting"
-main("xnat.py preber:309cresap HSeVi --list")
              
 
 
