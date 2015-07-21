@@ -3,6 +3,7 @@
 import sys, time
 import os, fnmatch, urllib, urllib2, base64, gzip
 import getpass
+import argparse
 
 nunda_server="http://nunda.northwestern.edu/nunda/"
 
@@ -185,21 +186,120 @@ class Nunda_Session:
             cols=i.split(',')
             if len(cols)>1:
                 for j in cols:
-                    row.append(j[1:-1])
+                    row.append(j)
                 table.append(row)
         return(table)
 
-HELP_MESSAGE="""
-xnat.py user:password project_name <options>
-	-h or --help	print this message
+#End Nunda_Session
 
-	user	        login for NUNDA password will be typed
-	project_name	name of the project holding subject sessions on NUNDA
 
-	<options>
-	-l or --list	just list the available subjects and return (good for testing)
-	all, -a, --all	get all available subjects (note: this is a lot of bandwidth, won't overwrite)
+def main(args):
+	
+    #Argparse has a help function built in which it displays with the -h or --help flags so no need to write one in
+    
+    # Assigns input to variables
+    user = args.user
+    project_name = args.project
+    
+    # for reading in the file of subjects to be downloaded    
+    if args.file:
+        subject_subset = []
+        f = open(args.file, "r") #for reading only
+        for line in f:
+	    subject_subset.append(line.rstrip('\n'))
+        f.close()
 
+    # If password is not provided, prompts using the getpass library
+    if args.password:
+        password = args.password
+    else:
+        print "NUNDA login user %s" % user
+        password = getpass.getpass()
+
+    # Create network connection
+    print "Connecting to NUNDA"
+    try:
+        N=Nunda_Session(user,password)
+    except:
+        print "Unable to connect to NUNDA"
+        return
+
+    try:
+        q=N.query_nunda("data/archive/projects/%s/subjects?columns=xnat:subjectData/ID,xnat:subjectData/LABEL&format=csv" % project_name)
+    except:
+        print "Unable to retrieve subjects in project %s" % project_name
+        return
+
+    # Collects subject and session data from NUNDA
+    start_time=time.time()
+    subject_table=N.parse_table(q)
+    subject_list=[]
+    for i in subject_table[1:]:
+        S=Subject(i[1],N)
+        S.add_nunda_id(i[0])
+        q=N.query_nunda("data/archive/projects/%s/subjects/%s/experiments?columns=ID,project&format=csv" % (project_name,S.nunda_id))
+        exp_table=N.parse_table(q)
+        S.add_exp_id(exp_table[1][0])
+        q=N.query_nunda("data/archive/experiments/%s/reconstructions?columns=ID,project&format=csv" % S.experiment_id)
+        recon_table=N.parse_table(q)
+        for r in recon_table[1:]:
+            S.add_reconstruction(r[1],r[2])
+        subject_list.append(S)
+
+    # -l or --list option
+    if args.list:
+        # report what is available
+        for s in subject_list:
+            print "%s, %s reconstructions" % (s.label,len(s.reconstructions))
+            for i in s.reconstructions:
+                print "    %s" % i[0]
+        return
+
+    #if -a or --all flag is specified then downloads all subjects otherwise downloads a subset specified in the file read in with the -f option
+    if args.all:
+        download_list=subject_list
+    else:
+        download_list=[]
+        for i in subject_subset:
+            for j in subject_list: # find match
+                if j.label==i:
+                    print "Adding %s to download list" % i
+                    download_list.append(j)
+
+    # Get the data
+    for s in download_list:
+        print "Getting ",s.label
+        s.recon_files(RECON_LABEL)
+
+    elapsed_time=time.time()-start_time
+    print "Done, %d seconds elapsed" % elapsed_time
+    return
+
+
+#########################
+
+# argument parser function
+
+# This parser comes from the argparse library (a native python library) see: https://docs.python.org/2/howto/argparse.html for a tutorial and: https://docs.python.org/2/library/argparse.html#module-argparse for full documentation
+
+# Note the parser must come AFTER the main function for it to work
+
+# Additional explanation:
+    # formatter_class=argparse.RawDescriptionHelpFormatter allows the formatting of the help file within the command (otherwise it just wraps line)
+    # epilog= specifies that the text will display at the end of the help file
+    # parser.add_argument specifies the details of each argument that can be passed a 
+        # single dash specifies a shortcut flag
+        # double dash specifies the argument's name (and can also be used as the flag)
+        # the help= option is the information describing this input in the help file
+        # action="store_true" is used for flags that aren't taking an input they're just either present or absent
+
+# Example calls from the command line (note you can specify your arguments in any order):
+    # python xnat.py -user BeemanLab -proj BeemanLab -l
+    # python xnat.py -h
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, epilog='''\
+	
 	Variables set in script:
 	RECON_LABEL=%s
 	FUNCTIONAL_RUN_FILES=%s
@@ -209,89 +309,17 @@ xnat.py user:password project_name <options>
 
 	The _RUN_FILES are the files that will be downloaded from NUNDA and stored (not all)
 	The _DIR_PATTERN is the regular expresssion used to figure out which set of files to get
-""" % (RECON_LABEL,FUNCTIONAL_RUN_FILES, ANATOMICAL_RUN_FILES, FUNCTIONAL_DIR_PATTERN, ANATOMICAL_DIR_PATTERN)
+        '''% (RECON_LABEL, FUNCTIONAL_RUN_FILES, ANATOMICAL_RUN_FILES, FUNCTIONAL_DIR_PATTERN, ANATOMICAL_DIR_PATTERN))
 
-def main():
-	args=sys.argv
-	if len(args)==1 or args[1]=='-h' or args[1]=='--help':
-		print HELP_MESSAGE
-		return
-
-	# Argv[1] can hold user:password
-	# or just user, which is preferred for security
-	t=args[1].split(':')
-	user=t[0]
-	if len(t)<2 or t[1]=='':
-		print "NUNDA login user %s" % t[0] 
-		password=getpass.getpass()
-	else:
-		password=t[1]
-
-	# project name should be in argv[2]
-	project_name=args[2]
-
-	# Create network connection
-	print "Connecting to NUNDA"
-	try:
-		N=Nunda_Session(user,password)
-	except:
-		print "Unable to connect to NUNDA"
-		return
-
-	try:
-		q=N.query_nunda("data/archive/projects/%s/subjects?columns=xnat:subjectData/ID,xnat:subjectData/LABEL&format=csv" % project_name)
-	except:
-		print "Unable to retrieve subjects in project %s" % project_name
-		return
-
-	# Collects subject and session data from NUNDA
-	start_time=time.time()
-	subject_table=N.parse_table(q)
-	subject_list=[]
-	for i in subject_table[1:]:
-		S=Subject(i[1],N)
-		S.add_nunda_id(i[0])
-		q=N.query_nunda("data/archive/projects/%s/subjects/%s/experiments?columns=ID,project&format=csv" % (project_name,S.nunda_id))
-		exp_table=N.parse_table(q)
-		S.add_exp_id(exp_table[1][0])
-		q=N.query_nunda("data/archive/experiments/%s/reconstructions?columns=ID,project&format=csv" % S.experiment_id)
-		recon_table=N.parse_table(q)
-		for r in recon_table[1:]:
-		    S.add_reconstruction(r[1],r[2])
-		subject_list.append(S)
-
-	# -l or --list option
-	if len(args)>3 and (args[3]=='-l' or args[3]=='--list'):
-		# report what is available
-		for s in subject_list:
-			print "%s, %s reconstructions" % (s.label,len(s.reconstructions))
-			for i in s.reconstructions:
-				print "    %s" % i[0]
-		return
-
-	if len(args)==3 or args[3]=='all' or args[3]=='-a' or args[3]=='--all': # defaults to all
-		download_list=subject_list
-	else:
-		download_list=[]
-		for i in args[3:]:
-			for j in subject_list: # find match
-				if j.label==i:
-					print "Adding %s to download list" % i
-					download_list.append(j)
-
-	# Get the data
-	for s in download_list:
-		print "Getting ",s.label
-		s.recon_files(RECON_LABEL)
-
-	elapsed_time=time.time()-start_time
-	print "Done, %d seconds elapsed" % elapsed_time
-	return
-
-
-#########################
-
-main()
+    parser.add_argument('-user', '--user', help='Nunda Username', required=True)
+    parser.add_argument('-pass', '--password', help='Nunda Password. If left blank then program will prompt for password (NOTE: leaving the password out of the arguments is the more secure method)')
+    parser.add_argument('-proj', '--project', help='Name of the project holding subject sessions on NUNDA', required=True)
+    parser.add_argument('-l', '--list', help='Just list the available subjects and return (good for testing)', action="store_true")
+    parser.add_argument('-a', '--all', help='Get all available subjects (note: this is a lot of bandwidth, will not overwrite)', action="store_true")
+    parser.add_argument('-file', '--file', help='If you only want to download a subset of subjects, create a .txt file with one line per subject and specify its name to the argument in quotes e.g. "subj.txt"')
+    
+    args = parser.parse_args()
+    main(args)
 
              
 
